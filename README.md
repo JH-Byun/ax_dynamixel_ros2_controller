@@ -78,4 +78,4 @@ common_params = [{'ids': [11, 12, 13, 14, 15, 16]}]
 | State Topics   | `/dxl11/state/position``/dxl11/state/velocity``/dxl11/state/current``/dxl11/state/mode``/dxl11/state/torque_enabled` | Real-time feedback |
 | Command Topics | `/dxl11/goal_position``/dxl11/goal_velocity``/dxl11/goal_current``/dxl11/set_mode`                                   | Control commands   |
 
----
+---# dynamixel_basic_controller
