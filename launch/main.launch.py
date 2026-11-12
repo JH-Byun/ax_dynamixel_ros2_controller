@@ -13,11 +13,4 @@ def generate_launch_description():
             output='screen',
             parameters=common_params + [{'position_speed': position_speed}],
         ),
-        Node(
-            package='dynamixel_test_ctrl',
-            executable='gui_node',
-            name='gui_node',
-            output='screen',
-            parameters=common_params,
-        ),
     ])

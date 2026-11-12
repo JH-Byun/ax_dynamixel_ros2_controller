@@ -1,13 +1,12 @@
-# Dynamixel Basic Controller — AX-18A (ROS 2 + GUI)
+# Dynamixel Serial Bridge — AX-18A (ROS 2)
 
 A ROS 2 Humble Python package for controlling DYNAMIXEL AX-18A servos through
-one serial adapter. It provides a controller node, a Tkinter GUI, and ROS topics
-for position commands, wheel speed commands, and feedback.
+one serial adapter. The headless controller subscribes to desired position,
+velocity, and load-limit topics and publishes motor feedback. No GUI is opened.
 
-The current implementation targets **AX-18A**, replacing the original XM430
-controller. It uses **Protocol 1.0** and individual READ requests. AX-18A does
-not provide current control or measured-current feedback; the GUI displays
-inferred load instead.
+AX-18A uses Protocol 1.0 and has no closed-loop target-load control.
+`goal_load` sets the Torque Limit register (address 34), not a measured-load
+setpoint. See the [ROBOTIS control table](https://emanual.robotis.com/docs/en/dxl/ax/ax-18a/).
 
 ## Hardware configuration
 
@@ -31,7 +30,7 @@ in `dynamixel_test_ctrl/dynamixel_master_node.py`.
 
 ### Servo IDs
 
-Both launch files pass the same ID list to the controller and GUI:
+Both launch files configure the controller ID list:
 
 | Launch file | Current configured IDs |
 | --- | --- |
@@ -45,18 +44,18 @@ For the two-servo setup using IDs 4 and 7:
 common_params = [{'ids': [4, 7]}]
 ```
 
-If run directly without an `ids` parameter, both nodes default to `[4, 7]`.
+If run directly without an `ids` parameter, the controller defaults to `[4, 7]`.
 Each servo on the bus must have a unique ID.
 
 ## Install and build
 
 These instructions assume ROS 2 Humble is installed and this repository is
-located at `~/dynamixel_ws/src/Dynamixel_basic_controller`.
+located at `~/dynamixel_ws/src/ax_dynamixel_ros2_controller`.
 
 ```bash
 source /opt/ros/humble/setup.bash
 sudo apt update
-sudo apt install ros-humble-dynamixel-sdk python3-tk python3-colcon-common-extensions
+sudo apt install ros-humble-dynamixel-sdk python3-colcon-common-extensions
 
 cd ~/dynamixel_ws
 rosdep install --from-paths src --ignore-src -r -y
@@ -88,10 +87,8 @@ source ~/dynamixel_ws/install/setup.bash
 ros2 launch dynamixel_test_ctrl jh.launch.py
 ```
 
-This starts `master_node` and `gui_node`. A graphical desktop is required for
-the Tkinter GUI. Rebuild and source the workspace after changing launch files.
-
-To run only the controller, for example on a machine without a display:
+This starts only `master_node`; no display is required. Rebuild and source the
+workspace after changing launch files. To run the controller directly:
 
 ```bash
 ros2 run dynamixel_test_ctrl master_node --ros-args -p 'ids:=[4, 7]'
@@ -137,24 +134,12 @@ Rebuild and restart after editing a launch file. For controller-only operation:
 ros2 run dynamixel_test_ctrl master_node --ros-args -p 'ids:=[4, 7]' -p position_speed:=30
 ```
 
-Commands for a
-mode other than the active mode are ignored. There is no current-control mode.
-
-## GUI
-
-Each servo row provides Position and Velocity buttons, `+` and `−` buttons,
-and live raw position, speed, load, and local goal displays.
-
-| GUI control | Step | GUI goal range |
-| --- | --- | --- |
-| Position | 10 raw units (about 2.93°) | 0–1023 |
-| Velocity | 20 raw units | −100 to 100 |
-
-Controls wait for the first position sample. Selecting Position initializes the
-local goal from the latest position; selecting Velocity initializes it to zero.
-The controller rejects position commands outside its saved joint limits, even
-if they are within the GUI's 0–1023 range. The displayed goal is local to the GUI
-and does not track commands sent from another ROS publisher.
+Position commands require position mode. Velocity commands set joint movement
+speed (1–1023) in position mode, or signed wheel output (−1023..1023) in
+velocity mode. Mode changes reset speed to `position_speed` or wheel stop.
+Load-limit commands are accepted in either mode, with range 0–1023
+(0 disables available torque; 1023 allows the maximum configured torque).
+There is no current-control or target-load mode.
 
 ## Position values and degrees
 
@@ -188,7 +173,8 @@ servo units, with speed and load direction decoded into a sign.
 | --- | --- | --- |
 | `/dxl<ID>/set_mode` | `std_msgs/msg/String` | `position` or `velocity` |
 | `/dxl<ID>/goal_position` | `std_msgs/msg/Int32` | Joint position command |
-| `/dxl<ID>/goal_velocity` | `std_msgs/msg/Int32` | Signed wheel command |
+| `/dxl<ID>/goal_velocity` | `std_msgs/msg/Int32` | Joint speed (1–1023) or signed wheel command (−1023..1023) |
+| `/dxl<ID>/goal_load` | `std_msgs/msg/Int32` | Torque limit, 0–1023; not a target measured load |
 | `/dxl<ID>/state/position` | `std_msgs/msg/Int32` | Raw position |
 | `/dxl<ID>/state/velocity` | `std_msgs/msg/Int32` | Signed raw present speed |
 | `/dxl<ID>/state/load` | `std_msgs/msg/Int32` | Signed inferred load, not measured current or torque |
@@ -215,6 +201,13 @@ approximately 150°:
 ```bash
 ros2 topic pub --once /dxl4/set_mode std_msgs/msg/String "{data: 'position'}"
 ros2 topic pub --once /dxl4/goal_position std_msgs/msg/Int32 "{data: 512}"
+```
+
+Set movement speed and torque limit while in Position mode:
+
+```bash
+ros2 topic pub --once /dxl4/goal_velocity std_msgs/msg/Int32 "{data: 30}"
+ros2 topic pub --once /dxl4/goal_load std_msgs/msg/Int32 "{data: 300}"
 ```
 
 Select wheel mode, wait for confirmation, then command rotation:

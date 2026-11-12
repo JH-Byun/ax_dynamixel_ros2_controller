@@ -2,7 +2,7 @@
 <package format="3">
   <name>dynamixel_test_ctrl</name>
   <version>0.1.0</version>
-  <description>Package for controlling Dynamixel motors via ROS2 and GUI</description>
+  <description>Headless ROS2 to Dynamixel serial bridge</description>
 
   <maintainer email="kyj@example.com">kyj</maintainer>
   <license>MIT</license>
@@ -16,7 +16,6 @@
   <depend>launch_ros</depend>
 
   <exec_depend>dynamixel_sdk</exec_depend>
-  <exec_depend>python3-tk</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>

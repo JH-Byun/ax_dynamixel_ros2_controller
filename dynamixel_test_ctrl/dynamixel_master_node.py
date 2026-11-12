@@ -9,6 +9,7 @@ ADDR_CCW_LIMIT = 8
 ADDR_TORQUE_ENABLE = 24
 ADDR_GOAL_POSITION = 30
 ADDR_MOVING_SPEED = 32
+ADDR_TORQUE_LIMIT = 34
 ADDR_PRESENT_POSITION = 36
 PROTOCOL_VERSION = 1.0
 BAUDRATE = 1000000
@@ -70,6 +71,7 @@ class DynamixelMasterNode(Node):
             self.set_operating_mode(dxl_id, 'position')
             self.create_subscription(Int32, f'/dxl{dxl_id}/goal_position', lambda msg, i=dxl_id: self.send_command(i, 'position', msg.data), 10)
             self.create_subscription(Int32, f'/dxl{dxl_id}/goal_velocity', lambda msg, i=dxl_id: self.send_command(i, 'velocity', msg.data), 10)
+            self.create_subscription(Int32, f'/dxl{dxl_id}/goal_load', lambda msg, i=dxl_id: self.send_command(i, 'load', msg.data), 10)
             self.create_subscription(String, f'/dxl{dxl_id}/set_mode', lambda msg, i=dxl_id: self.set_operating_mode(i, msg.data), 10)
         self.timer = self.create_timer(0.05, self.read_states)
         self.get_logger().info(f'AX-18A controller: {DEVICENAME}, {BAUDRATE} bps, IDs {self.dxl_ids}')
@@ -89,15 +91,32 @@ class DynamixelMasterNode(Node):
         return self.check_result(dxl_id, f'write address {address}', result, error)
 
     def send_command(self, dxl_id, mode, value):
-        if self.current_mode.get(dxl_id) != mode:
+        active_mode = self.current_mode.get(dxl_id)
+        if active_mode is None:
+            self.get_logger().warn(f'[ID {dxl_id}] Motor is not initialized')
             return
-        if mode == 'position':
+        if mode == 'load':
+            # AX-18A has no goal-load register: constrain available torque.
+            if not 0 <= value <= 1023:
+                self.get_logger().warn('Load limit must be 0..1023')
+                return
+            self.write(dxl_id, ADDR_TORQUE_LIMIT, value)
+        elif mode == 'position':
+            if active_mode != 'position':
+                self.get_logger().warn(f'[ID {dxl_id}] Select position mode before sending a position')
+                return
             low, high = self.joint_limits[dxl_id]
             if not low <= value <= high:
                 self.get_logger().warn(f'[ID {dxl_id}] Position must be {low}..{high}')
                 return
             self.write(dxl_id, ADDR_GOAL_POSITION, value)
         elif mode == 'velocity':
+            if active_mode == 'position':
+                if not 1 <= value <= 1023:
+                    self.get_logger().warn('Joint speed must be 1..1023; zero means unlimited speed')
+                    return
+                self.write(dxl_id, ADDR_MOVING_SPEED, value)
+                return
             if not -1023 <= value <= 1023:
                 self.get_logger().warn('Wheel speed must be -1023..1023')
                 return

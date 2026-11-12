@@ -15,13 +15,12 @@ setup(
     zip_safe=True,
     maintainer='kyj',
     maintainer_email='kyj@example.com',
-    description='Dynamixel ROS2 control and GUI integration',
+    description='Headless ROS2 to Dynamixel serial bridge',
     license='MIT',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'master_node = dynamixel_test_ctrl.dynamixel_master_node:main',
-            'gui_node = dynamixel_test_ctrl.dynamixel_gui_node:main',
         ],
     },
 )
