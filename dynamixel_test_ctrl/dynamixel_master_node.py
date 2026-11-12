@@ -1,114 +1,160 @@
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32, Float32, Bool, String
-from dynamixel_sdk import *
+from std_msgs.msg import Int32, Bool, String
+from dynamixel_sdk import PortHandler, PacketHandler, COMM_SUCCESS
 
-ADDR_TORQUE_ENABLE = 64
-ADDR_GOAL_POSITION = 116
-ADDR_GOAL_VELOCITY = 104
-ADDR_GOAL_CURRENT = 102
-ADDR_PRESENT_POSITION = 132
-ADDR_PRESENT_VELOCITY = 128
-ADDR_PRESENT_CURRENT = 126
-ADDR_OPERATING_MODE = 11
-ADDR_DRIVE_MODE = 10
-MULTI_TURN_ENABLE = 2
-
-PROTOCOL_VERSION = 2.0
+ADDR_CW_LIMIT = 6
+ADDR_CCW_LIMIT = 8
+ADDR_TORQUE_ENABLE = 24
+ADDR_GOAL_POSITION = 30
+ADDR_MOVING_SPEED = 32
+ADDR_PRESENT_POSITION = 36
+PROTOCOL_VERSION = 1.0
 BAUDRATE = 1000000
 DEVICENAME = '/dev/ttyUSB0'
+
+
+def decode_direction(value):
+    magnitude = value & 1023
+    return -magnitude if value & 1024 else magnitude
+
 
 class DynamixelMasterNode(Node):
     def __init__(self):
         super().__init__('master_node')
-        self.declare_parameter('ids', [11])
-        self.dxl_ids = self.get_parameter('ids').get_parameter_value().integer_array_value
-
+        self.declare_parameter('ids', [4, 7])
+        self.dxl_ids = list(self.get_parameter('ids').value)
         self.portHandler = PortHandler(DEVICENAME)
         self.packetHandler = PacketHandler(PROTOCOL_VERSION)
-
         if not self.portHandler.openPort():
-            self.get_logger().error("Failed to open port!")
-            return
+            raise RuntimeError(f'Cannot open {DEVICENAME}')
         if not self.portHandler.setBaudRate(BAUDRATE):
-            self.get_logger().error("Failed to set baudrate!")
-            return
-
-        self.current_mode = {dxl_id: 'position' for dxl_id in self.dxl_ids}
+            self.portHandler.closePort()
+            raise RuntimeError(f'Cannot set baud rate to {BAUDRATE}')
+        self.current_mode = {}
+        self.joint_limits = {}
         self.pub = {}
         for dxl_id in self.dxl_ids:
             self.pub[dxl_id] = {
-                'position': self.create_publisher(Int32, f'/dxl{dxl_id}/state/position', 10),
-                'velocity': self.create_publisher(Int32, f'/dxl{dxl_id}/state/velocity', 10),
-                'current': self.create_publisher(Int32, f'/dxl{dxl_id}/state/current', 10),
-                'mode': self.create_publisher(String, f'/dxl{dxl_id}/state/mode', 10),
-                'torque': self.create_publisher(Bool, f'/dxl{dxl_id}/state/torque_enabled', 10)
+                key: self.create_publisher(msg_type, f'/dxl{dxl_id}/state/{topic}', 10)
+                for key, msg_type, topic in (
+                    ('position', Int32, 'position'), ('velocity', Int32, 'velocity'),
+                    ('load', Int32, 'load'), ('mode', String, 'mode'),
+                    ('torque', Bool, 'torque_enabled'))
             }
-
-        self.group_bulk_read = GroupBulkRead(self.portHandler, self.packetHandler)
-        for dxl_id in self.dxl_ids:
+            model, result, error = self.packetHandler.ping(self.portHandler, dxl_id)
+            if not self.check_result(dxl_id, 'ping', result, error):
+                continue
+            if model != 18:
+                self.get_logger().error(f'[ID {dxl_id}] Expected AX-18A model 18, got {model}; skipping')
+                continue
+            limits, result, error = self.packetHandler.readTxRx(self.portHandler, dxl_id, ADDR_CW_LIMIT, 4)
+            if not self.check_result(dxl_id, 'read angle limits', result, error):
+                continue
+            cw = limits[0] | limits[1] << 8
+            ccw = limits[2] | limits[3] << 8
+            self.joint_limits[dxl_id] = (cw, ccw) if ccw else (0, 1023)
+            self.current_mode[dxl_id] = None
             self.set_operating_mode(dxl_id, 'position')
-            self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, ADDR_TORQUE_ENABLE, 1)
-
-            self.group_bulk_read.addParam(dxl_id, ADDR_PRESENT_POSITION, 10)  # pos(4) + vel(4) + cur(2)
-            
             self.create_subscription(Int32, f'/dxl{dxl_id}/goal_position', lambda msg, i=dxl_id: self.send_command(i, 'position', msg.data), 10)
             self.create_subscription(Int32, f'/dxl{dxl_id}/goal_velocity', lambda msg, i=dxl_id: self.send_command(i, 'velocity', msg.data), 10)
-            self.create_subscription(Int32, f'/dxl{dxl_id}/goal_current', lambda msg, i=dxl_id: self.send_command(i, 'current', msg.data), 10)
             self.create_subscription(String, f'/dxl{dxl_id}/set_mode', lambda msg, i=dxl_id: self.set_operating_mode(i, msg.data), 10)
+        self.timer = self.create_timer(0.05, self.read_states)
+        self.get_logger().info(f'AX-18A controller: {DEVICENAME}, {BAUDRATE} bps, IDs {self.dxl_ids}')
 
-        self.timer = self.create_timer(0.02, self.read_states)
-        self.get_logger().info(f"Starting Dynamixel Master Node (IDs: {self.dxl_ids})")
-        
-        for dxl_id in self.dxl_ids:
-            self.send_command(dxl_id, 'position', 0)
-        self.get_logger().info(f"Initialize servo motors position")
+    def check_result(self, dxl_id, action, result, error):
+        if result != COMM_SUCCESS or error:
+            detail = (self.packetHandler.getTxRxResult(result) if result != COMM_SUCCESS
+                      else self.packetHandler.getRxPacketError(error))
+            options = {'throttle_duration_sec': 2.0} if action == 'read states' else {}
+            self.get_logger().error(f'[ID {dxl_id}] {action}: {detail}', **options)
+            return False
+        return True
+
+    def write(self, dxl_id, address, value, size=2):
+        method = self.packetHandler.write1ByteTxRx if size == 1 else self.packetHandler.write2ByteTxRx
+        result, error = method(self.portHandler, dxl_id, address, value)
+        return self.check_result(dxl_id, f'write address {address}', result, error)
 
     def send_command(self, dxl_id, mode, value):
-        if self.current_mode[dxl_id] != mode:
+        if self.current_mode.get(dxl_id) != mode:
             return
         if mode == 'position':
-            self.packetHandler.write4ByteTxRx(self.portHandler, dxl_id, ADDR_GOAL_POSITION, value)
+            low, high = self.joint_limits[dxl_id]
+            if not low <= value <= high:
+                self.get_logger().warn(f'[ID {dxl_id}] Position must be {low}..{high}')
+                return
+            self.write(dxl_id, ADDR_GOAL_POSITION, value)
         elif mode == 'velocity':
-            self.packetHandler.write4ByteTxRx(self.portHandler, dxl_id, ADDR_GOAL_VELOCITY, value)
-        elif mode == 'current':
-            self.packetHandler.write2ByteTxRx(self.portHandler, dxl_id, ADDR_GOAL_CURRENT, value)
+            if not -1023 <= value <= 1023:
+                self.get_logger().warn('Wheel speed must be -1023..1023')
+                return
+            self.write(dxl_id, ADDR_MOVING_SPEED, abs(value) | (1024 if value < 0 else 0))
 
     def set_operating_mode(self, dxl_id, mode):
-        mode_value = {'position': 4, 'velocity': 1, 'current': 0}.get(mode, 3)
-        self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, ADDR_TORQUE_ENABLE, 0)
-        self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, ADDR_OPERATING_MODE, mode_value)
-        self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, ADDR_DRIVE_MODE, MULTI_TURN_ENABLE)
-        self.packetHandler.write1ByteTxRx(self.portHandler, dxl_id, ADDR_TORQUE_ENABLE, 1)
+        if mode not in ('position', 'velocity'):
+            self.get_logger().warn('AX-18A supports position and wheel velocity modes; no current mode')
+            return
+        if self.current_mode.get(dxl_id) == mode:
+            return
+        if not self.write(dxl_id, ADDR_TORQUE_ENABLE, 0, 1):
+            return
+        self.current_mode[dxl_id] = None
+        self.pub[dxl_id]['torque'].publish(Bool(data=False))
+        cw, ccw = self.joint_limits[dxl_id] if mode == 'position' else (0, 0)
+        for address, value in ((ADDR_CW_LIMIT, cw), (ADDR_CCW_LIMIT, ccw)):
+            if not self.write(dxl_id, address, value):
+                return
+        if mode == 'position':
+            position, result, error = self.packetHandler.read2ByteTxRx(self.portHandler, dxl_id, ADDR_PRESENT_POSITION)
+            if not self.check_result(dxl_id, 'read initial position', result, error):
+                return
+            if not cw <= position <= ccw:
+                self.get_logger().error(f'[ID {dxl_id}] Position outside joint limits; torque remains off')
+                return
+            if not self.write(dxl_id, ADDR_GOAL_POSITION, position):
+                return
+        # In joint mode use a limited speed; in wheel mode zero means stop.
+        if not self.write(dxl_id, ADDR_MOVING_SPEED, 100 if mode == 'position' else 0):
+            return
+        if not self.write(dxl_id, ADDR_TORQUE_ENABLE, 1, 1):
+            return
         self.current_mode[dxl_id] = mode
         self.pub[dxl_id]['mode'].publish(String(data=mode))
         self.pub[dxl_id]['torque'].publish(Bool(data=True))
-        self.get_logger().info(f"[ID {dxl_id}] Mode change → {mode}")
+        self.get_logger().info(f'[ID {dxl_id}] Mode change → {mode}')
 
     def read_states(self):
-        if self.group_bulk_read.txRxPacket() != COMM_SUCCESS:
-            self.get_logger().warn("Failed to read Bulk")
-            return
-
-        for dxl_id in self.dxl_ids:
-            if not self.group_bulk_read.isAvailable(dxl_id, ADDR_PRESENT_POSITION, 10):
-                self.get_logger().warn(f"[ID {dxl_id}] position/velocity/current not available")
+        # AX-18A uses ordinary Protocol 1.0 READ, not bulk read.
+        for dxl_id in self.current_mode:
+            data, result, error = self.packetHandler.readTxRx(self.portHandler, dxl_id, ADDR_PRESENT_POSITION, 6)
+            if not self.check_result(dxl_id, 'read states', result, error):
                 continue
+            values = [data[i] | data[i + 1] << 8 for i in (0, 2, 4)]
+            for key, value in zip(('position', 'velocity', 'load'),
+                                  (values[0], decode_direction(values[1]), decode_direction(values[2]))):
+                self.pub[dxl_id][key].publish(Int32(data=value))
+            mode = self.current_mode[dxl_id]
+            if mode:
+                self.pub[dxl_id]['mode'].publish(String(data=mode))
 
-            pos = self.group_bulk_read.getData(dxl_id, ADDR_PRESENT_POSITION, 4)
-            vel = self.group_bulk_read.getData(dxl_id, ADDR_PRESENT_VELOCITY, 4)
-            cur = self.group_bulk_read.getData(dxl_id, ADDR_PRESENT_CURRENT, 2)
+    def destroy_node(self):
+        for dxl_id in self.current_mode:
+            self.write(dxl_id, ADDR_TORQUE_ENABLE, 0, 1)
+        self.portHandler.closePort()
+        return super().destroy_node()
 
-            self.pub[dxl_id]['position'].publish(Int32(data=pos))
-            self.pub[dxl_id]['velocity'].publish(Int32(data=vel))
-            self.pub[dxl_id]['current'].publish(Int32(data=cur))
 
 def main(args=None):
     rclpy.init(args=args)
-    node = DynamixelMasterNode()
+    node = None
     try:
+        node = DynamixelMasterNode()
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-    node.destroy_node()
-    rclpy.shutdown()
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
