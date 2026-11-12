@@ -127,7 +127,17 @@ starts with a zero CCW limit, the controller uses joint limits 0–1023.
 Wheel mode writes both limits to zero; those EEPROM values persist across power
 cycles. Saved custom limits are not retained by this application across restarts.
 
-Position mode sets the Moving Speed register to raw value 100. Commands for a
+Position mode sets the Moving Speed register using the startup-only ROS parameter
+`position_speed` (default: 100). Edit `position_speed = 100` in either launch file
+to set a shared speed for its servos. Valid values are 1–1023; lower values move
+slower. Zero is excluded because it means maximum available speed in joint mode.
+Rebuild and restart after editing a launch file. For controller-only operation:
+
+```bash
+ros2 run dynamixel_test_ctrl master_node --ros-args -p 'ids:=[4, 7]' -p position_speed:=30
+```
+
+Commands for a
 mode other than the active mode are ignored. There is no current-control mode.
 
 ## GUI

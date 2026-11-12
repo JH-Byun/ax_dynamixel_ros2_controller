@@ -1,5 +1,6 @@
 import rclpy
 from rclpy.node import Node
+from rcl_interfaces.msg import ParameterDescriptor, IntegerRange
 from std_msgs.msg import Int32, Bool, String
 from dynamixel_sdk import PortHandler, PacketHandler, COMM_SUCCESS
 
@@ -23,6 +24,17 @@ class DynamixelMasterNode(Node):
     def __init__(self):
         super().__init__('master_node')
         self.declare_parameter('ids', [4, 7])
+        self.declare_parameter(
+            'position_speed', 100,
+            ParameterDescriptor(
+                description='AX-18A joint moving speed in raw units (1–1023).',
+                read_only=True,
+                integer_range=[IntegerRange(from_value=1, to_value=1023, step=1)],
+            ),
+        )
+        self.position_speed = self.get_parameter('position_speed').value
+        if not 1 <= self.position_speed <= 1023:
+            raise ValueError('position_speed must be between 1 and 1023')
         self.dxl_ids = list(self.get_parameter('ids').value)
         self.portHandler = PortHandler(DEVICENAME)
         self.packetHandler = PacketHandler(PROTOCOL_VERSION)
@@ -115,7 +127,7 @@ class DynamixelMasterNode(Node):
             if not self.write(dxl_id, ADDR_GOAL_POSITION, position):
                 return
         # In joint mode use a limited speed; in wheel mode zero means stop.
-        if not self.write(dxl_id, ADDR_MOVING_SPEED, 100 if mode == 'position' else 0):
+        if not self.write(dxl_id, ADDR_MOVING_SPEED, self.position_speed if mode == 'position' else 0):
             return
         if not self.write(dxl_id, ADDR_TORQUE_ENABLE, 1, 1):
             return
