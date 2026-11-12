@@ -3,7 +3,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     common_params = [{'ids': [3]}]
-    position_speed = 30  # Raw joint speed: 1–1023; lower values move slower.
+    position_speed = 200  # Raw joint speed: 1–1023; lower values move slower.
 
     return LaunchDescription([
         Node(
